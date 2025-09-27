@@ -4,7 +4,9 @@ on:
   workflow_dispatch:   # manual trigger
   schedule:
     - cron: "0 * * * *"   # every hour (adjust as needed)
-
+permissions:
+  contents: write   # ✅ allow the bot to push commits
+  
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
