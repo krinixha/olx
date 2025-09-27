@@ -4,6 +4,7 @@ OLX Playwright monitor:
 - Writes site HTML to docs/index.html (for GitHub Pages)
 - Persists seen items in seen.json (committed back to repo by the workflow)
 - Sends email when new items found
+- Saves a screenshot each run (docs/screenshot_<ts>.png) for debugging
 """
 
 import os, json, time, smtplib, pathlib
@@ -121,6 +122,16 @@ def scrape_olx_page(page, url):
         page.wait_for_selector("div[data-aut-id='itemsList']", timeout=20000)
     except Exception as e:
         print("⚠️ Failed to load items on", url, e)
+
+        # Save screenshot anyway
+        ts = int(time.time())
+        screenshot_path = f"docs/screenshot_fail_{ts}.png"
+        try:
+            page.screenshot(path=screenshot_path, full_page=True)
+            print("📸 Saved fail screenshot to", screenshot_path)
+        except Exception as ee:
+            print("⚠️ Could not save screenshot:", ee)
+
         return []
 
     items = []
@@ -145,6 +156,15 @@ def scrape_olx_page(page, url):
 
         snippet = title[:160].replace("\n", " ")
         items.append({"title": title, "link": href, "snippet": snippet})
+
+    # Save screenshot of successful page load
+    ts = int(time.time())
+    screenshot_path = f"docs/screenshot_{ts}.png"
+    try:
+        page.screenshot(path=screenshot_path, full_page=True)
+        print("📸 Saved screenshot to", screenshot_path)
+    except Exception as e:
+        print("⚠️ Could not save screenshot:", e)
 
     print(f"✅ Found {len(items)} items on {url}")
     return items
