@@ -1,33 +1,25 @@
 name: OLX Monitor + Pages
 
 on:
+  workflow_dispatch:
   schedule:
-    - cron: "*/30 * * * *"   # every 30 minutes
-  workflow_dispatch: {}
-
-permissions:
-  contents: write   # allow workflow to push commits
+    - cron: "0 * * * *"   # runs every hour
 
 jobs:
   build-and-run:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
-        with:
-          persist-credentials: true
-          fetch-depth: 0
+      - uses: actions/checkout@v3
 
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          python-version: "3.11"
+          python-version: '3.11'
 
       - name: Install dependencies & Playwright
         run: |
-          python -m pip install --upgrade pip
           pip install playwright
-          playwright install chromium
+          playwright install --with-deps chromium
 
       - name: Run OLX monitor
         env:
@@ -37,21 +29,14 @@ jobs:
           SMTP_PASS: ${{ secrets.SMTP_PASS }}
           SMTP_HOST: ${{ secrets.SMTP_HOST }}
           SMTP_PORT: ${{ secrets.SMTP_PORT }}
-          SITE_TITLE: "OLX Deals Monitor"
-        run: |
-          python olx_monitor.py
+        run: python olx_monitor.py
 
-      - name: Show changed files (for debug)
-        run: git status --porcelain && git --no-pager diff --name-only
-
-      - name: Commit docs/index.html and seen.json if changed
+      - name: Commit docs/ and seen.json if changed
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add docs/index.html seen.json || true
-          if ! git diff --cached --quiet; then
-            git commit -m "chore: update OLX monitor site & seen.json [skip ci]" || true
-            git push origin HEAD:main
-          else
-            echo "No changes to commit."
-          fi
+          git add docs/ seen.json
+          git diff --cached --quiet || git commit -m "chore: update OLX monitor site & seen.json [skip ci]"
+
+      - name: Push changes
+        run: git push
