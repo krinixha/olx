@@ -163,22 +163,26 @@ def main():
     new_items = []
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True, args=["--no-sandbox"])
-        page = browser.new_page()
-        for url in SEARCH_URLS:
-            try:
-                items = scrape_olx_page(page, url)
-            except Exception as e:
-                print("Error scraping", url, e)
-                items = []
-            for it in items:
-                if it["link"] not in {x['link'] for x in all_found}:
-                    all_found.append(it)
-                if it["link"] not in seen:
-                    new_items.append(it)
-                    seen.add(it["link"])
-            time.sleep(2)
-        browser.close()
+    browser = p.chromium.launch(
+        headless=True,
+        args=["--no-sandbox", "--disable-http2"]
+    )
+    page = browser.new_page()
+    for url in SEARCH_URLS:
+        try:
+            items = scrape_olx_page(page, url)
+        except Exception as e:
+            print("Error scraping", url, e)
+            items = []
+        for it in items:
+            if it["link"] not in {x['link'] for x in all_found}:
+                all_found.append(it)
+            if it["link"] not in seen:
+                new_items.append(it)
+                seen.add(it["link"])
+        time.sleep(2)
+    browser.close()
+
 
     html = make_site_html(all_found, new_items)
     with open(DOCS_INDEX, "w", encoding="utf-8") as f:
