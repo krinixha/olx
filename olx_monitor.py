@@ -1,18 +1,25 @@
-#!/usr/bin/env python3
 """
-OLX Playwright monitor:
-- Writes site HTML to docs/index.html (for GitHub Pages)
-- Persists seen items in seen.json (committed back to repo by the workflow)
-- Sends email when new items found
-- Saves a screenshot each run (docs/screenshot_<ts>.png) for debugging
+OLX Deals Monitor
+-----------------
+Scrapes OLX.in for new items (DDR4, DDR5, NVMe, Xeon, PowerEdge).
+- Saves results into docs/index.html (for GitHub Pages).
+- Sends email if new items are found.
+- Always takes a screenshot after visiting OLX, so we can debug if OLX blocks headless browsers.
+
+This version includes detailed comments so you understand each step.
 """
 
-import os, json, time, smtplib, pathlib
+import os
+import json
+import time
+import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-from playwright.sync_api import sync_playwright
+from playwright.async_api import async_playwright
 
-# ========== CONFIG ==========
+# -------------------------------
+# 1. Search URLs on OLX
+# -------------------------------
 SEARCH_URLS = [
     "https://www.olx.in/items/q-ddr4/?isSearchCall=true",
     "https://www.olx.in/items/q-ddr5/?isSearchCall=true",
@@ -20,198 +27,161 @@ SEARCH_URLS = [
     "https://www.olx.in/items/q-xeon/?isSearchCall=true",
     "https://www.olx.in/items/q-poweredge/?isSearchCall=true",
 ]
-KEYWORDS = ["ddr4", "ddr5", "nvme", "xeon", "poweredge"]
-SEEN_FILE = "seen.json"
-DOCS_INDEX = "docs/index.html"
 
-# Email / SMTP from env
-EMAIL_FROM = os.getenv("EMAIL_FROM")
-EMAIL_TO = os.getenv("EMAIL_TO", "").split(",") if os.getenv("EMAIL_TO") else []
-SMTP_USER = os.getenv("SMTP_USER")
-SMTP_PASS = os.getenv("SMTP_PASS")
-SMTP_HOST = os.getenv("SMTP_HOST", "smtp.gmail.com")
-SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
+# -------------------------------
+# 2. File paths
+# -------------------------------
+SEEN_FILE = "seen.json"              # stores already-seen items
+DOCS_DIR = "docs"                    # GitHub Pages will serve this folder
+HTML_FILE = os.path.join(DOCS_DIR, "index.html")
 
-# Optional: title for the generated page
-SITE_TITLE = os.getenv("SITE_TITLE", "OLX Deals Monitor")
-# ============================
-
-
-def ensure_docs_dir():
-    pathlib.Path("docs").mkdir(exist_ok=True)
-
-
+# -------------------------------
+# 3. Track seen items (avoid duplicates)
+# -------------------------------
 def load_seen():
+    """Load already-seen items from seen.json"""
     if os.path.exists(SEEN_FILE):
-        try:
-            return set(json.load(open(SEEN_FILE, "r", encoding="utf-8")))
-        except Exception:
-            return set()
+        with open(SEEN_FILE, "r") as f:
+            return set(json.load(f))
     return set()
 
-
 def save_seen(seen):
-    json.dump(sorted(list(seen)), open(SEEN_FILE, "w", encoding="utf-8"), indent=2)
+    """Save seen items back to seen.json"""
+    with open(SEEN_FILE, "w") as f:
+        json.dump(list(seen), f)
 
-
-def make_site_html(all_items, new_items):
-    head = f"""<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8"/>
-<meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>{SITE_TITLE}</title>
-<style>
-body{{font-family:Inter,ui-sans-serif,system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial; margin:18px; max-width:1000px}}
-h1{{color:#0b57d0}}
-.card{{padding:10px;border-radius:8px;border:1px solid #e6e6e6;margin-bottom:10px}}
-.new{{background:#f0fff4;border-color:#b7f0c6}}
-a{{color:#0b57d0;text-decoration:none}}
-.small{{color:#666;font-size:0.9rem}}
-</style>
-</head>
-<body>
-<h1>{SITE_TITLE}</h1>
-<p class="small">Auto-updated: {time.strftime("%Y-%m-%d %H:%M:%S")}</p>
-<h2>New items ({len(new_items)})</h2>
-"""
-    new_html = ""
-    if new_items:
-        for it in new_items:
-            new_html += f"""<div class="card new"><a href="{it['link']}" target="_blank"><strong>{it['title']}</strong></a>
-<p class="small">{it.get('snippet','')}</p></div>"""
-    else:
-        new_html += "<p>No new items in this run.</p>"
-
-    all_html = "<h2>All tracked items</h2>"
-    if all_items:
-        for it in all_items:
-            all_html += f"""<div class="card"><a href="{it['link']}" target="_blank"><strong>{it['title']}</strong></a>
-<p class="small">{it.get('snippet','')}</p></div>"""
-    else:
-        all_html += "<p>No items found yet.</p>"
-
-    foot = "</body></html>"
-    return head + new_html + all_html + foot
-
-
-def send_email(new_items):
-    if not EMAIL_FROM or not EMAIL_TO or not SMTP_USER or not SMTP_PASS:
-        print("Email not configured (missing env). Skipping email.")
-        return
-    msg = MIMEMultipart("alternative")
-    msg["From"] = EMAIL_FROM
-    msg["To"] = ", ".join(EMAIL_TO)
-    msg["Subject"] = f"OLX Monitor — {len(new_items)} new item(s)"
-    body = "<h2>New OLX items</h2><ul>"
-    for i in new_items:
-        body += f"<li><a href='{i['link']}'>{i['title']}</a></li>"
-    body += "</ul>"
-    msg.attach(MIMEText(body, "html"))
-    s = smtplib.SMTP(SMTP_HOST, SMTP_PORT)
-    s.starttls()
-    s.login(SMTP_USER, SMTP_PASS)
-    s.sendmail(EMAIL_FROM, EMAIL_TO, msg.as_string())
-    s.quit()
-
-
-def scrape_olx_page(page, url):
+# -------------------------------
+# 4. Scrape one OLX search page
+# -------------------------------
+async def scrape_olx_page(context, url):
     print("Visiting", url)
-    try:
-        page.goto(url, timeout=90000, wait_until="domcontentloaded")
-        page.wait_for_selector("div[data-aut-id='itemsList']", timeout=20000)
-    except Exception as e:
-        print("⚠️ Failed to load items on", url, e)
+    page = await context.new_page()
+    results = []
 
-        # Save screenshot anyway
+    try:
+        # Load the page (with 60s timeout)
+        await page.goto(url, timeout=60000)
+
+        # 🔹 Always take a screenshot for debugging
         ts = int(time.time())
-        screenshot_path = f"docs/screenshot_fail_{ts}.png"
+        screenshot_path = f"{DOCS_DIR}/screenshot_{ts}.png"
         try:
-            page.screenshot(path=screenshot_path, full_page=True)
-            print("📸 Saved fail screenshot to", screenshot_path)
-        except Exception as ee:
-            print("⚠️ Could not save screenshot:", ee)
-
-        return []
-
-    items = []
-    cards = page.query_selector_all("a[data-aut-id='itemBox']")
-
-    for c in cards:
-        try:
-            href = c.get_attribute("href")
-            title = c.inner_text().strip()
-        except Exception:
-            continue
-
-        if not href or not title:
-            continue
-
-        low = title.lower()
-        if not any(k in low for k in KEYWORDS):
-            continue
-
-        if not href.startswith("http"):
-            href = "https://www.olx.in" + href
-
-        snippet = title[:160].replace("\n", " ")
-        items.append({"title": title, "link": href, "snippet": snippet})
-
-    # Save screenshot of successful page load
-    ts = int(time.time())
-    screenshot_path = f"docs/screenshot_{ts}.png"
-    try:
-        page.screenshot(path=screenshot_path, full_page=True)
-        print("📸 Saved screenshot to", screenshot_path)
-    except Exception as e:
-        print("⚠️ Could not save screenshot:", e)
-
-    print(f"✅ Found {len(items)} items on {url}")
-    return items
-
-
-def main():
-    ensure_docs_dir()
-    seen = load_seen()
-    all_found = []
-    new_items = []
-
-    with sync_playwright() as p:
-        browser = p.chromium.launch(
-            headless=True,
-            args=["--no-sandbox", "--disable-http2"]
-        )
-        page = browser.new_page()
-        for url in SEARCH_URLS:
-            try:
-                items = scrape_olx_page(page, url)
-            except Exception as e:
-                print("Error scraping", url, e)
-                items = []
-            for it in items:
-                if it["link"] not in {x['link'] for x in all_found}:
-                    all_found.append(it)
-                if it["link"] not in seen:
-                    new_items.append(it)
-                    seen.add(it["link"])
-            time.sleep(2)
-        browser.close()
-
-    html = make_site_html(all_found, new_items)
-    with open(DOCS_INDEX, "w", encoding="utf-8") as f:
-        f.write(html)
-
-    save_seen(seen)
-
-    if new_items:
-        try:
-            send_email(new_items)
-            print(f"Sent email for {len(new_items)} new item(s)")
+            await page.screenshot(path=screenshot_path, full_page=True)
+            print("📸 Screenshot saved:", screenshot_path)
         except Exception as e:
-            print("Failed to send email:", e)
-    else:
-        print("No new items found.")
+            print("⚠️ Screenshot failed:", e)
 
+        # Wait for OLX's results container
+        await page.wait_for_selector('[data-aut-id="itemsList"]', timeout=20000)
 
+        # Extract each listing
+        items = await page.query_selector_all('[data-aut-id="itemBox"]')
+        for item in items:
+            link = await item.query_selector("a")
+            if link:
+                href = await link.get_attribute("href")
+                if href:
+                    results.append("https://www.olx.in" + href)
+
+    except Exception as e:
+        # If OLX blocks us or structure changes, log the error
+        print("Error scraping", url, e)
+
+    finally:
+        await page.close()
+
+    return results
+
+# -------------------------------
+# 5. Main run loop
+# -------------------------------
+async def run():
+    async with async_playwright() as p:
+        # Launch Chromium headless
+        browser = await p.chromium.launch(
+            headless=True,
+            args=["--disable-http2"]  # avoids HTTP/2 errors you saw earlier
+        )
+
+        # Pretend to be a normal browser (important for anti-bot)
+        context = await browser.new_context(
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+        )
+
+        # Load history of seen items
+        seen = load_seen()
+        all_new = []
+
+        # Visit each OLX search URL
+        for url in SEARCH_URLS:
+            items = await scrape_olx_page(context, url)
+            for link in items:
+                if link not in seen:
+                    all_new.append(link)
+                    seen.add(link)
+
+        await browser.close()
+        save_seen(seen)  # save updated seen list
+
+        # -------------------------------
+        # 6. Generate GitHub Pages report
+        # -------------------------------
+        os.makedirs(DOCS_DIR, exist_ok=True)
+        with open(HTML_FILE, "w", encoding="utf-8") as f:
+            f.write("<html><head><title>OLX Deals Monitor</title></head><body>")
+            f.write("<h1>OLX Deals Monitor</h1>")
+            f.write("<p>Auto-updated: {}</p>".format(time.strftime("%Y-%m-%d %H:%M:%S")))
+
+            # Show new items (if any)
+            f.write("<h2>New items ({})</h2>".format(len(all_new)))
+            if all_new:
+                f.write("<ul>")
+                for link in all_new:
+                    f.write(f"<li><a href='{link}' target='_blank'>{link}</a></li>")
+                f.write("</ul>")
+            else:
+                f.write("<p>No new items in this run.</p>")
+
+            # Show all tracked items
+            f.write("<h2>All tracked items</h2>")
+            f.write("<ul>")
+            for link in seen:
+                f.write(f"<li><a href='{link}' target='_blank'>{link}</a></li>")
+            f.write("</ul>")
+
+            f.write("</body></html>")
+
+        # -------------------------------
+        # 7. Email notification
+        # -------------------------------
+        if all_new:
+            send_email(all_new)
+
+# -------------------------------
+# 8. Email sending function
+# -------------------------------
+def send_email(new_items):
+    """Send email if new items were found"""
+    msg = MIMEMultipart()
+    msg["From"] = os.environ.get("EMAIL_FROM")
+    msg["To"] = os.environ.get("EMAIL_TO")
+    msg["Subject"] = "New OLX Listings Found"
+
+    body = "New OLX items:\n\n" + "\n".join(new_items)
+    msg.attach(MIMEText(body, "plain"))
+
+    try:
+        with smtplib.SMTP(os.environ["SMTP_HOST"], int(os.environ["SMTP_PORT"])) as server:
+            server.starttls()
+            server.login(os.environ["SMTP_USER"], os.environ["SMTP_PASS"])
+            server.sendmail(msg["From"], [msg["To"]], msg.as_string())
+            print("✅ Email sent successfully.")
+    except Exception as e:
+        print("⚠️ Failed to send email:", e)
+
+# -------------------------------
+# 9. Run script
+# -------------------------------
 if __name__ == "__main__":
-    main()
+    import asyncio
+    asyncio.run(run())
