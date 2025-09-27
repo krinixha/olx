@@ -3,10 +3,15 @@ name: OLX Monitor + Pages
 on:
   workflow_dispatch:
   schedule:
-    - cron: "*/30 * * * *"   # every 30 minutes (adjust as needed)
+    - cron: "*/30 * * * *"   # every 30 minutes
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
 
 jobs:
-  build-and-run:
+  build-and-deploy:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repo
@@ -33,15 +38,11 @@ jobs:
           SMTP_PORT: ${{ secrets.SMTP_PORT }}
         run: python olx_monitor.py
 
-      - name: Commit docs/index.html, screenshots, and seen.json
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "actions@github.com"
-          git add docs/ seen.json || true
-          git commit -m "chore: update OLX monitor site & seen.json [skip ci]" || echo "No changes to commit"
-          git push
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v1
+        with:
+          path: ./docs
 
-  # GitHub Pages deployment (built-in action)
-  deploy:
-    needs: build-and-run
-    uses: actions/deploy-pages@v2
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v2
