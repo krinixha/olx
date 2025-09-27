@@ -117,25 +117,43 @@ def send_email(new_items):
 def scrape_olx_page(page, url):
     print("Visiting", url)
     page.goto(url, timeout=90000)
-    time.sleep(3)  # wait for JS
-    anchors = page.query_selector_all("a[href*='/item/']")
+    try:
+        # Wait until at least one item card is visible
+        page.wait_for_selector("a[href*='/item/']", timeout=15000)
+    except Exception:
+        print("⚠️ No items loaded on", url)
+        return []
+
     items = []
-    for a in anchors:
+    cards = page.query_selector_all("a[href*='/item/']")
+
+    for c in cards:
         try:
-            href = a.get_attribute("href")
-            txt = a.inner_text().strip()
+            href = c.get_attribute("href")
+            title = c.inner_text().strip()
         except Exception:
             continue
-        if not href or not txt:
+
+        if not href or not title:
             continue
-        low = txt.lower()
+
+        low = title.lower()
         if not any(k in low for k in KEYWORDS):
             continue
+
         if not href.startswith("http"):
             href = "https://www.olx.in" + href
-        snippet = txt[:160].replace("\n", " ")
-        items.append({"title": txt, "link": href, "snippet": snippet})
+
+        snippet = title[:160].replace("\n", " ")
+        items.append({
+            "title": title,
+            "link": href,
+            "snippet": snippet
+        })
+
+    print(f"✅ Found {len(items)} items on {url}")
     return items
+
 
 
 def main():
