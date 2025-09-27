@@ -2,8 +2,8 @@ name: OLX Monitor + Pages
 
 on:
   workflow_dispatch:   # manual trigger
-  schedule:
-    - cron: "0 * * * *"   # every hour (adjust as needed)
+#  schedule:
+  #  - cron: "0 * * * *"   # every hour (adjust as needed)
     
 permissions:
   contents: write   # ✅ allow the bot to push commits
