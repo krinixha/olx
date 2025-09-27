@@ -1,77 +1,112 @@
-#!/usr/bin/env python3
-"""
-OLX Monitor (stealth-enabled)
------------------------------
-- Scrapes OLX.in search pages with Playwright
-- Uses stealth techniques (random UA, locale, JS patches)
-- Saves screenshots to docs/
-- Writes docs/index.html and updates seen.json
-- Sends email if new items found
-"""
-
-import os
+import requests
 import json
-import time
-import random
-import smtplib
-from pathlib import Path
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
-from playwright.async_api import async_playwright
+import os
+from datetime import datetime
 
-# ---------- CONFIG ----------
-SEARCH_URLS = [
-    "https://www.olx.in/items/q-ddr4/?isSearchCall=true",
-    "https://www.olx.in/items/q-ddr5/?isSearchCall=true",
-    "https://www.olx.in/items/q-nvme/?isSearchCall=true",
-    "https://www.olx.in/items/q-xeon/?isSearchCall=true",
-    "https://www.olx.in/items/q-poweredge/?isSearchCall=true",
-]
-KEYWORDS = ["ddr4", "ddr5", "nvme", "xeon", "poweredge"]
-
+SEARCH_TERMS = ["ddr4", "ddr5", "nvme", "xeon", "poweredge"]
 SEEN_FILE = "seen.json"
-DOCS_DIR = Path("docs")
-HTML_FILE = DOCS_DIR / "index.html"
+OUTPUT_FILE = "docs/index.html"
 
-# Email from secrets
-EMAIL_FROM = os.getenv("EMAIL_FROM")
-EMAIL_TO = os.getenv("EMAIL_TO", "")
-SMTP_USER = os.getenv("SMTP_USER")
-SMTP_PASS = os.getenv("SMTP_PASS")
-SMTP_HOST = os.getenv("SMTP_HOST", "smtp.gmail.com")
-SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
 
-# Realistic User-Agents
-USER_AGENTS = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 13_6) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.3 Safari/605.1.15",
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Safari/537.36",
-]
-LOCALES = [("en-GB", "Europe/London"), ("en-IN", "Asia/Kolkata"), ("en-US", "America/Los_Angeles")]
+def fetch_olx(query):
+    """Fetch ads for a query from OLX JSON API"""
+    url = f"https://www.olx.in/api/relevance/v2/search?query={query}&limit=20&offset=0"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                      "AppleWebKit/537.36 (KHTML, like Gecko) "
+                      "Chrome/115 Safari/537.36",
+        "Referer": f"https://www.olx.in/items/q-{query}/?isSearchCall=true",
+    }
 
-STEALTH_JS = r"""
-Object.defineProperty(navigator, 'webdriver', { get: () => false });
-Object.defineProperty(navigator, 'plugins', { get: () => [1,2,3,4] });
-Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
-"""
+    try:
+        resp = requests.get(url, headers=headers, timeout=20)
+        resp.raise_for_status()
+        data = resp.json()
+        items = []
+        for ad in data.get("data", []):
+            ad_id = ad.get("id")
+            title = ad.get("title")
+            price = ad.get("price", {}).get("value", {}).get("display", "N/A")
+            link = "https://www.olx.in" + ad.get("url", "")
+            items.append({"id": ad_id, "title": title, "price": price, "url": link})
+        return items
+    except Exception as e:
+        print(f"Error fetching {query}: {e}")
+        return []
 
-# ---------- Helpers ----------
+
 def load_seen():
-    if Path(SEEN_FILE).exists():
-        try:
-            return set(json.load(open(SEEN_FILE)))
-        except Exception:
-            return set()
-    return set()
+    """Load seen items from JSON"""
+    if os.path.exists(SEEN_FILE):
+        with open(SEEN_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return []
+
 
 def save_seen(seen):
-    json.dump(sorted(list(seen)), open(SEEN_FILE, "w"), indent=2)
+    """Save seen items"""
+    with open(SEEN_FILE, "w", encoding="utf-8") as f:
+        json.dump(seen, f, indent=2)
 
-def send_email(new_items):
-    if not (EMAIL_FROM and EMAIL_TO and SMTP_USER and SMTP_PASS):
-        print("⚠ Email not configured, skipping.")
-        return
-    msg = MIMEMultipart("alternative")
-    msg["From"], msg["To"] = EMAIL_FROM, EMAIL_TO
-    msg["Subject"] = f"OLX Monitor — {len(new_items)} new items"
-    htm
+
+def save_html(all_items, new_items):
+    """Write HTML report for GitHub Pages"""
+    with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
+        f.write("<html><head><meta charset='UTF-8'><title>OLX Deals Monitor</title></head><body>")
+        f.write("<h1>OLX Deals Monitor</h1>")
+        f.write(f"<p>Auto-updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>")
+
+        f.write(f"<h2>New items ({len(new_items)})</h2>")
+        if new_items:
+            f.write("<ul>")
+            for item in new_items:
+                f.write(
+                    f"<li><a href='{item['url']}' target='_blank'>{item['title']}</a> "
+                    f"- {item['price']}</li>"
+                )
+            f.write("</ul>")
+        else:
+            f.write("<p>No new items in this run.</p>")
+
+        f.write("<h2>All tracked items</h2>")
+        if all_items:
+            f.write("<ul>")
+            for item in all_items:
+                f.write(
+                    f"<li><a href='{item['url']}' target='_blank'>{item['title']}</a> "
+                    f"- {item['price']}</li>"
+                )
+            f.write("</ul>")
+        else:
+            f.write("<p>No items found yet.</p>")
+
+        f.write("</body></html>")
+
+
+def main():
+    seen = load_seen()
+    seen_ids = set(item["id"] for item in seen)
+
+    all_items = []
+    new_items = []
+
+    for term in SEARCH_TERMS:
+        print(f"Fetching {term}...")
+        items = fetch_olx(term)
+        for item in items:
+            all_items.append(item)
+            if item["id"] not in seen_ids:
+                new_items.append(item)
+
+    if new_items:
+        print(f"Found {len(new_items)} new items.")
+        seen.extend(new_items)
+        save_seen(seen)
+    else:
+        print("No new items.")
+
+    save_html(all_items, new_items)
+
+
+if __name__ == "__main__":
+    main()
