@@ -117,14 +117,14 @@ def send_email(new_items):
 def scrape_olx_page(page, url):
     print("Visiting", url)
     try:
-        page.goto(url, timeout=90000, wait_until="load")
-        page.wait_for_selector("a[href*='/item/']", timeout=15000)
+        page.goto(url, timeout=90000, wait_until="domcontentloaded")
+        page.wait_for_selector("div[data-aut-id='itemsList']", timeout=20000)
     except Exception as e:
         print("⚠️ Failed to load items on", url, e)
         return []
 
     items = []
-    cards = page.query_selector_all("a[href*='/item/']")
+    cards = page.query_selector_all("a[data-aut-id='itemBox']")
 
     for c in cards:
         try:
@@ -147,3 +147,51 @@ def scrape_olx_page(page, url):
         items.append({"title": title, "link": href, "snippet": snippet})
 
     print(f"✅ Found {len(items)} items on {url}")
+    return items
+
+
+def main():
+    ensure_docs_dir()
+    seen = load_seen()
+    all_found = []
+    new_items = []
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(
+            headless=True,
+            args=["--no-sandbox", "--disable-http2"]
+        )
+        page = browser.new_page()
+        for url in SEARCH_URLS:
+            try:
+                items = scrape_olx_page(page, url)
+            except Exception as e:
+                print("Error scraping", url, e)
+                items = []
+            for it in items:
+                if it["link"] not in {x['link'] for x in all_found}:
+                    all_found.append(it)
+                if it["link"] not in seen:
+                    new_items.append(it)
+                    seen.add(it["link"])
+            time.sleep(2)
+        browser.close()
+
+    html = make_site_html(all_found, new_items)
+    with open(DOCS_INDEX, "w", encoding="utf-8") as f:
+        f.write(html)
+
+    save_seen(seen)
+
+    if new_items:
+        try:
+            send_email(new_items)
+            print(f"Sent email for {len(new_items)} new item(s)")
+        except Exception as e:
+            print("Failed to send email:", e)
+    else:
+        print("No new items found.")
+
+
+if __name__ == "__main__":
+    main()
